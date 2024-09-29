@@ -1,0 +1,7 @@
+[package]
+name = "mxmizer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+as3_parser = "1.0.25"
