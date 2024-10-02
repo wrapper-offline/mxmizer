@@ -3,7 +3,7 @@
 The intended use case for this project is to decompile GoAnimate applications, though it should be able to be applied to other things, so long as it was made in Apache/Adobe Flex.
 
 # Usage
-you can't rn sowwy xd
+you can't rn sowwy
 
 # License
 MIT License

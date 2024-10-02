@@ -2,14 +2,29 @@ use std::fs;
 use std::io;
 use as3_parser::ns::*;
 
-struct AsFile {
-	// remove later
-	#[allow(dead_code)]
-	class: ClassDefinition
+struct Attribute {
+	name: String,
+	value: String,
 }
 
-impl AsFile {
-	fn parse(content:String) -> Result<AsFile, &'static str> {
+struct MxmlElement {
+	namespace: String,
+	class: String,
+	attributes: Vec<Attribute>,
+	children: Vec<MxmlElement>
+}
+
+const BLOCK_PROPS:[&str; 4] = ["_bindings", "_watchers", "_bindingsByDestination", "_bindingsBeginWithWord"];
+
+struct MxmlDoc {
+	class: ClassDefinition,
+	root: Option<MxmlElement>,
+	#[allow(unused)]
+	children: Option<Vec<MxmlElement>>,
+}
+
+impl MxmlDoc {
+	fn parse(content:&String) -> Result<MxmlDoc, &'static str> {
 		// parse file
 		let compilation_unit = CompilationUnit::new(None, content.into());
 		let parser_options = ParserOptions::default();
@@ -18,22 +33,113 @@ impl AsFile {
 		// get class definition
 		let package = program.packages.iter().next().unwrap();
 		for directive in package.block.directives.iter() {
-			match directive.as_ref() {
-				Directive::ClassDefinition(defn) => {
-					return Ok(AsFile {
-						class: defn.to_owned()
-					});
-				},
+			let Directive::ClassDefinition(defn) = directive.as_ref() else {
+				continue;
+			};
+			let mut doc = MxmlDoc {
+				class: defn.to_owned(),
+				root: None,
+				children: None,
+			};
+			if !doc.is_valid_doc() {
+				return Err("heh");
+			}
+			doc.parse_constructor();
+			return Ok(doc);
+		}
 
+		Err("NO_DEF")
+	}
+
+	fn expr_to_string(expr:&Expression) -> String {
+		match expr {
+			Expression::StringLiteral(lit) => return lit.value.to_owned(),
+			Expression::NumericLiteral(lit) => return lit.value.to_owned(),
+			_ => return "".into()
+		}
+	}
+
+	fn parse_constructor(&mut self) {
+		let constructor = self.get_function(&self.class.name.0).unwrap();
+		let body = constructor.common.body.as_ref().unwrap();
+		let FunctionBody::Block(body) = body else {
+			return;
+		};
+		let mut attributes:Vec<Attribute> = Vec::new();
+		for directive in body.directives.iter() {
+			let Directive::ExpressionStatement(expr) = directive.as_ref() else {
+				continue;
+			};
+			match expr.expression.as_ref() {
+				// possible: children, attributes, embeds,
+				Expression::Assignment(expr) => {
+					match expr.left.as_ref() {
+						Expression::Member(left) => {
+							// only accept properties of `this`
+							let Expression::ThisLiteral(_) = left.base.as_ref() else {
+								continue;
+							};
+							let QualifiedIdentifierIdentifier::Id(id) = &left.identifier.id else {
+								continue;
+							};
+
+							if id.0 == "mxmlContent" {
+								//TODO PARSE CHILDREn
+								continue;
+							}
+							// attributes
+							if BLOCK_PROPS.contains(&id.0.as_str()) {
+								continue;
+							}
+							let name;
+							match id.0.to_owned().as_str() {
+								"percentWidth" => name = "width".into(),
+								"percentHeight" => name = "height".into(),
+								val => name = String::from(val.to_owned())
+							}
+							let value = MxmlDoc::expr_to_string(expr.right.as_ref());
+							attributes.push(Attribute {
+								name: name,
+								value: value,
+							});
+							continue;
+						}
+						// states
+						Expression::QualifiedIdentifier(left) => {
+							let QualifiedIdentifierIdentifier::Id(id) = &left.id else {
+								continue;
+							};
+							if id.0 != "states" {
+								continue;
+							}
+							// TODO PARE STAETS
+						}
+						_ => continue
+					}
+					// attributes
+
+				}
+				// component declarations
+				Expression::Call(expr) => {
+
+				}
 				_ => {}
 			}
 		}
+		self.root = Some(MxmlElement {
+			namespace: "hi".into(),
+			class: "yo".into(),
+			attributes: attributes,
+			children: Vec::new()
+		});
+	}
 
-		Err("Could not find class definition")
+	fn parse_child(&self, name:String) {
+
 	}
 
 	/// checks for an `mx_internal::_document = this;` statement in the constructor
-	fn is_mxml(&self) -> bool {
+	fn is_valid_doc(&self) -> bool {
 		let constructor = self.get_function(&self.class.name.0).unwrap();
 		let body = constructor.common.body.as_ref().unwrap();
 		let FunctionBody::Block(body) = body else {
@@ -86,6 +192,10 @@ impl AsFile {
 		}
 		None
 	}
+
+	fn generate_mxml() {
+
+	}
 }
 
 fn main() -> io::Result<()> {
@@ -93,15 +203,22 @@ fn main() -> io::Result<()> {
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
 	for path in entries {
-		let file = fs::read_to_string(&path)?;
-		let script = AsFile::parse(file)
-			.expect("whoopsies");
-		let is_mxml = script.is_mxml();
-		println!("File {:?} is an MXML document: {}", &path, is_mxml);
+		let file = fs::read_to_string(&path)
+			.expect("error reading file");
+		let parse_result = MxmlDoc::parse(&file);
+		match parse_result {
+			Ok(document) => {
+
+			},
+			Err(err) => {
+				if err == "INVALID" {
+					println!("{:?} - Skipped", path);
+					continue;
+				}
+				
+			}
+		}
 	}
 
 	Ok(())
-
-	// let contents = fs::read_to_string(file_path)
-	//	.expect("Should have been able to read the file");
 }
