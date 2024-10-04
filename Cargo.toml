@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 as3_parser = "1.0.25"
+xml-rs = "0.8.22"
