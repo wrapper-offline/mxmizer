@@ -1,25 +1,60 @@
+use as3_parser::ns::*;
+use if_chain::if_chain;
 use std::borrow::Cow;
+use std::error::Error;
 use std::fs;
 use std::io;
-use std::error::Error;
-use as3_parser::ns::*;
+use xml::attribute::Attribute;
 use xml::name::Name;
 use xml::namespace::Namespace;
 use xml::writer::{EmitterConfig, XmlEvent};
 
 const BLOCK_PROPS:[&str; 4] = ["_bindings", "_watchers", "_bindingsByDestination", "_bindingsBeginWithWord"];
+const DEFAULT_NAMESPACES:&[DefaultNamespace] = &[
+	DefaultNamespace {
+		base_package: &"fx",
+		name: &"fx",
+		value: &"http://ns.adobe.com/mxml/2009",
+	},
+	DefaultNamespace {
+		base_package: &"spark",
+		name: &"s",
+		value: &"library://ns.adobe.com/flex/spark",
+	},
+	DefaultNamespace {
+		base_package: "mx",
+		name: &"mx",
+		value: &"library://ns.adobe.com/flex/mx",
+	},
+];
 
-#[derive(Debug)]
-struct Attribute {
-	name: String,
-	value: String,
+struct DefaultNamespace {
+	base_package: &'static str,
+	name: &'static str,
+	value: &'static str,
 }
-impl Attribute {
-	fn parse(mut name:String, val_expr:&Expression) -> Option<Attribute> {
+
+/// stringifies an expression and returns it
+fn expr_to_string(expr:&Expression) -> String {
+	match expr {
+		Expression::StringLiteral(literal) =>
+			return literal.value.to_owned(),
+		Expression::NumericLiteral(literal) =>
+			return literal.value.to_owned(),
+		Expression::BooleanLiteral(literal) =>
+			return literal.value.to_owned().to_string(),
+		_ =>return "".into()
+	}
+}
+
+#[derive(Debug, PartialEq)]
+struct ElemAttribute(String, String);
+impl ElemAttribute {
+	fn parse(mut name:String, val_expr:&Expression) -> Option<ElemAttribute> {
 		if BLOCK_PROPS.contains(&name.as_str()) {
 			return None;
 		}
-		let mut value = MxmlDocModel::expr_to_string(val_expr);
+		let mut value = expr_to_string(val_expr);
 		match name.as_str() {
 			"percentWidth" => {
 				name = "width".into();
@@ -31,25 +66,40 @@ impl Attribute {
 			},
 			val => name = String::from(val.to_owned())
 		}
-		Some(Attribute {
-			name: name,
-			value: value,
-		})
+		Some(ElemAttribute(name, value))
 	}
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 struct MxmlElement {
 	namespace: String,
 	class_name: String,
-	attributes: Vec<Attribute>,
+	attributes: Vec<ElemAttribute>,
 	children: Vec<MxmlElement>
 }
 impl MxmlElement {
-	fn get_parser_events(&self) -> Result<Vec<XmlEvent>, Box<dyn Error>> {
-		let attributes = Vec::new();
-		let mut namespace = Namespace::empty();
-		namespace.put("a", "urn:some:document");
+	fn get_parser_events(&self, doc:&MxmlDoc) -> Result<Vec<XmlEvent>, Box<dyn Error>> {
+		let mut attributes = Vec::new();
+
+		for attribute in &self.attributes {
+			attributes.push(Attribute {
+				name: Name {
+					local_name: attribute.0.as_str(),
+					namespace: None,
+					prefix: None
+				},
+				value: attribute.1.as_str()
+			});
+		}
+
+		// add namespaces if we're on the root element
+		let namespace:Namespace;
+		if doc.root.as_ref().unwrap() == self {
+			namespace = doc.namespaces.to_owned();
+		} else {
+			namespace = Namespace::empty();
+		}
+
 		let start = XmlEvent::StartElement {
 			name: Name {
 				local_name: &self.class_name,
@@ -67,44 +117,111 @@ impl MxmlElement {
 	}
 }
 
-struct MxmlDocModel {
-	class: ClassDefinition,
-	root: Option<MxmlElement>,
+struct Binding {
+	dest_id: String,
+	dest_attribute: String,
+	source: String,
 }
 
-impl MxmlDocModel {
-	fn parse(content:&String) -> Option<MxmlDocModel> {
+struct MxmlDoc {
+	imports: Vec<ImportDirective>,
+	class: ClassDefinition,
+	root: Option<MxmlElement>,
+	namespaces: Namespace,
+	bindings: Vec<Binding>,
+}
+impl MxmlDoc {
+	fn parse(content:&String) -> Option<MxmlDoc> {
 		// parse file
-		let compilation_unit = CompilationUnit::new(None, content.into());
+		let compilation_unit = CompilationUnit::new(None, content.to_owned());
 		let parser_options = ParserOptions::default();
 		let program = ParserFacade(&compilation_unit, parser_options).parse_program();
 
-		// get class definition
+		let mut imports = Vec::new();
 		let package = program.packages.iter().next().unwrap();
 		for directive in package.block.directives.iter() {
-			let Directive::ClassDefinition(defn) = directive.as_ref() else {
-				continue;
-			};
-			let mut doc = MxmlDocModel {
-				class: defn.to_owned(),
-				root: None,
-			};
-			if !doc.is_valid_doc() {
-				return None;
+			match directive.as_ref() {
+				Directive::ImportDirective(import) => {
+					imports.push(import.to_owned());
+				},
+				Directive::ClassDefinition(class) => {
+					let mut namespace = Namespace::empty();
+					for def_ns in DEFAULT_NAMESPACES {
+						namespace.put(def_ns.name, def_ns.value);
+					}
+
+					let mut doc = MxmlDoc {
+						imports,
+						class: class.to_owned(),
+						root: None,
+						namespaces: namespace,
+						bindings: Vec::new(),
+					};
+					if !doc.is_valid_doc() {
+						return None;
+					}
+					// store the bindings first so we can use them during element parsing
+					// doc.bindings
+		
+					doc.root = doc.parse_constructor();
+					return Some(doc);
+				},
+				_ => continue,
 			}
-			doc.root = doc.parse_constructor();
-			return Some(doc);
 		}
 
 		None
 	}
 
-	fn expr_to_string(expr:&Expression) -> String {
-		match expr {
-			Expression::StringLiteral(lit) => return lit.value.to_owned(),
-			Expression::NumericLiteral(lit) => return lit.value.to_owned(),
-			_ => return "".into()
+	fn get_function(&self, name:&String) -> Option<&FunctionDefinition> {
+		for directive in self.class.block.directives.iter() {
+			if_chain! {
+				if let Directive::FunctionDefinition(defn) = directive.as_ref();
+				if &defn.name_identifier().0 == name;
+				then {
+					return Some(defn);
+				}
+			}
 		}
+		None
+	}
+
+	/// returns the name of an imported package as a vector of strings
+	fn get_package_name(&self, specifier:&String) -> Option<Vec<String>> {
+		for import in self.imports.iter() {
+			if_chain! {
+				if let ImportSpecifier::Identifier(id) = &import.import_specifier;
+				if &id.0 == specifier;
+				then {
+					let name = 
+						import.package_name.to_owned()
+						.iter_mut()
+						.map(|v| return v.0.to_owned())
+						.collect::<Vec<String>>();
+					return Some(name.to_owned());
+				}
+			}
+		}
+		None
+	}
+
+	fn use_namespace(&mut self, specifier:&String) -> String {
+		let full_name = self
+			.get_package_name(specifier)
+			.expect("Import should have existed");
+
+		let first_val = full_name
+			.first()
+			.expect("Package name should have had at least one element");
+		let def_ns = DEFAULT_NAMESPACES.into_iter().find(|ns| ns.base_package == first_val);
+		if let Some(def_ns) = def_ns {
+			return def_ns.name.into();
+		}
+
+		let name = full_name.last().unwrap().to_owned();
+		let value = full_name.join(".") + ".*";
+		self.namespaces.put(name.clone(), value);
+		name
 	}
 
 	fn parse_constructor(&mut self) -> Option<MxmlElement> {
@@ -113,49 +230,48 @@ impl MxmlDocModel {
 		let FunctionBody::Block(body) = body else {
 			return None;
 		};
-		let mut attributes:Vec<Attribute> = Vec::new();
+		let mut attributes:Vec<ElemAttribute> = Vec::new();
 		for expr in body.directives.iter() {
 			let Directive::ExpressionStatement(expr) = expr.as_ref() else {
 				continue;
 			};
 			match expr.expression.as_ref() {
-				// possible: children, attributes, embeds,
 				Expression::Assignment(expr) => {
-					match expr.left.as_ref() {
-						Expression::Member(left) => {
-							// only accept properties of `this`
-							let Expression::ThisLiteral(_) = left.base.as_ref() else {
-								continue;
-							};
-							let QualifiedIdentifierIdentifier::Id(id) = &left.identifier.id else {
-								continue;
-							};
-
+					if_chain! {
+						if let Expression::Member(left) = expr.left.as_ref();
+						// only accept properties of `this`
+						if let Expression::ThisLiteral(_) = left.base.as_ref();
+						if let QualifiedIdentifierIdentifier::Id(id) = &left.identifier.id;
+						then {
+							// children array
 							if id.0 == "mxmlContent" {
 								//TODO PARSE CHILDREn
 								continue;
 							}
-							// attributes
-							match Attribute::parse(id.0.clone(), expr.right.as_ref()) {
+							// embeds
+							if id.0.contains("_embed_mxml_") {
+								// TOdo proper embed handler
+								continue;
+							}
+							// attributes OR properties
+							match ElemAttribute::parse(id.0.clone(), expr.right.as_ref()) {
 								Some(attr) => attributes.push(attr),
 								None => continue,
 							}
 							continue;
 						}
-						// states
-						Expression::QualifiedIdentifier(left) => {
-							let QualifiedIdentifierIdentifier::Id(id) = &left.id else {
-								continue;
-							};
-							if id.0 != "states" {
-								continue;
-							}
-							// TODO PARE STAETS
-						}
-						_ => continue
 					}
-					// attributes
-
+					// states
+					if_chain! {
+						if let Expression::QualifiedIdentifier(left) = expr.left.as_ref();
+						if let QualifiedIdentifierIdentifier::Id(id) = &left.id;
+						if id.0 != "states";
+						then {
+							// TODO PARE STAETS
+						} else {
+							continue;
+						}
+					}
 				}
 				// component declarations
 				Expression::Call(expr) => {
@@ -167,11 +283,12 @@ impl MxmlDocModel {
 		let Expression::QualifiedIdentifier(extends) = self.class.extends_clause.as_ref().unwrap().as_ref() else {
 			return None;
 		};
+		let class_name = extends.to_identifier_name().unwrap().0.to_owned();
 		Some(MxmlElement {
-			namespace: "f*lla".into(),
-			class_name: extends.to_identifier_name().unwrap().0.to_owned(),
-			attributes: attributes,
-			children: Vec::new()
+			namespace: self.use_namespace(&class_name),
+			class_name,
+			attributes,
+			children: Vec::new(),
 		})
 	}
 
@@ -216,20 +333,6 @@ impl MxmlDocModel {
 		false
 	}
 
-	fn get_function(&self, name:&String) -> Option<&FunctionDefinition> {
-		for directive in self.class.block.directives.iter() {
-			match directive.as_ref() {
-				Directive::FunctionDefinition(defn) => {
-					if &defn.name_identifier().0 == name {
-						return Some(defn);
-					}
-				}
-				_ => {}
-			}
-		}
-		None
-	}
-
 	/// generates and returns an mxml string
 	fn generate_mxml(&self) -> Result<(), Box<dyn Error>> {
 		let stdout = std::io::stdout().lock();
@@ -238,7 +341,7 @@ impl MxmlDocModel {
 			.create_writer(stdout);		
 
 		let root = self.root.as_ref().unwrap();
-		let events = root.get_parser_events()?;
+		let events = root.get_parser_events(self)?;
 		for event in events {
 			writer.write(event)?;
 		}
@@ -253,7 +356,7 @@ fn main() -> io::Result<()> {
 	for path in entries {
 		let file = fs::read_to_string(&path)
 			.expect("error reading file");
-		let parse_result = MxmlDocModel::parse(&file);
+		let parse_result = MxmlDoc::parse(&file);
 		match parse_result {
 			Some(document) => {
 				let Some(_) = document.root else {

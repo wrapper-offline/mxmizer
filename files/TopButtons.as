@@ -156,44 +156,44 @@ package anifire.creator.components
 			this._TopButtons_Fade1_i();
 			this.addEventListener("creationComplete",this.___TopButtons_Group1_creationComplete);
 			states = [new State({
-					"name":"editor",
-					"overrides":[new SetProperty().initializeFromObject({
-							"target":"_TopButtons_HGroup2",
-							"name":"visible",
-							"value":true
-							}),new SetProperty().initializeFromObject({
-								"target":"_TopButtons_HGroup3",
-								"name":"visible",
-								"value":true
-								}),new SetProperty().initializeFromObject({
-									"target":"modifyButton",
-									"name":"visible",
-									"value":false
-									}),new SetProperty().initializeFromObject({
-										"target":"modifyButton",
-										"name":"includeInLayout",
-										"value":false
-										})]
-					}),new State({
-						"name":"preview",
-						"overrides":[new SetProperty().initializeFromObject({
-								"target":"_TopButtons_HGroup2",
-								"name":"visible",
-								"value":false
-								}),new SetProperty().initializeFromObject({
-									"target":"_TopButtons_HGroup3",
-									"name":"visible",
-									"value":true
-									}),new SetProperty().initializeFromObject({
-										"target":"previewButton",
-										"name":"visible",
-										"value":false
-										}),new SetProperty().initializeFromObject({
-											"target":"previewButton",
-											"name":"includeInLayout",
-											"value":false
-											})]
-						})];
+				"name":"editor",
+				"overrides":[new SetProperty().initializeFromObject({
+					"target":"_TopButtons_HGroup2",
+					"name":"visible",
+					"value":true
+				}),new SetProperty().initializeFromObject({
+					"target":"_TopButtons_HGroup3",
+					"name":"visible",
+					"value":true
+				}),new SetProperty().initializeFromObject({
+					"target":"modifyButton",
+					"name":"visible",
+					"value":false
+				}),new SetProperty().initializeFromObject({
+					"target":"modifyButton",
+					"name":"includeInLayout",
+					"value":false
+				})]
+			}),new State({
+				"name":"preview",
+				"overrides":[new SetProperty().initializeFromObject({
+					"target":"_TopButtons_HGroup2",
+					"name":"visible",
+					"value":false
+				}),new SetProperty().initializeFromObject({
+					"target":"_TopButtons_HGroup3",
+					"name":"visible",
+					"value":true
+				}),new SetProperty().initializeFromObject({
+					"target":"previewButton",
+					"name":"visible",
+					"value":false
+				}),new SetProperty().initializeFromObject({
+					"target":"previewButton",
+					"name":"includeInLayout",
+					"value":false
+				})]
+			})];
 			var i:uint = 0;
 			while(i < bindings.length)
 			{
