@@ -1,8 +1,8 @@
-use as3_parser::ns::*;
+use as3_parser::{ns::*, operator};
 use as3_parser::ns::Expression::{Assignment, QualifiedIdentifier, ThisLiteral};
 use as3_parser::ns::QualifiedIdentifierIdentifier::Id;
-use crate::mxml::{AttributeChild, ElemAttribute, MxmlDoc, MxmlElement};
 use if_chain::if_chain;
+use crate::mxml::{AttributeChild, ElemAttribute, MxmlDoc, MxmlElement};
 use xml::namespace::Namespace;
 
 const BLOCK_PROPS:[&str; 5] = ["_bindings", "_watchers", "_bindingsByDestination", "_bindingsBeginWithWord", "currentState"];
@@ -79,11 +79,12 @@ impl ChildDefinition for FunctionDefinition {
 }
 
 pub struct MxmlTranspiler {
-	package:    Vec<String>,
-    imports:    Vec<ImportDirective>,
-    class:      ClassDefinition,
-    namespaces: RefCell<Namespace>,
-    bindings:   Vec<Binding>,
+	package:      Vec<String>,
+    imports:      Vec<ImportDirective>,
+    class:        ClassDefinition,
+    namespaces:   RefCell<Namespace>,
+    bindings:     Vec<Binding>,
+    declarations: RefCell<Vec<MxmlElement>>,
 }
 impl MxmlTranspiler {
     pub fn parse_doc(content:&String) -> Option<MxmlDoc> {
@@ -111,6 +112,7 @@ impl MxmlTranspiler {
                         class: class.to_owned(),
                         namespaces: RefCell::new(namespace),
 						bindings: Vec::new(),
+						declarations: RefCell::new(Vec::new()),
                     };
 
 					// verify that we're working with a valid mxml document
@@ -128,6 +130,7 @@ impl MxmlTranspiler {
                     let doc = MxmlDoc {
 						root,
 						namespaces: transpiler.namespaces.into_inner(),
+						declarations: transpiler.declarations.into_inner(),
 					};
 					return Some(doc);
 				},
@@ -146,13 +149,11 @@ impl MxmlTranspiler {
 
 		let extends_class:String;
 		if parse_as_root {
-			// get extended class name to use its package as a namespace
 			let Expression::QualifiedIdentifier(extends) = self.class.extends_clause.as_ref().unwrap().as_ref() else {
 				return None;
 			};
 			extends_class = extends.to_identifier_name().unwrap().0.to_owned();
 		} else {
-			// extract extended class name to use its package as a namespace
 			if_chain! {
 				if let Expression::QualifiedIdentifier(res_type) = elem_def
 					.common.signature.result_type
@@ -168,7 +169,7 @@ impl MxmlTranspiler {
 				}
 			}
 		}
-		let namespace = self.use_namespace(&extends_class);
+		let ns_name = self.use_namespace(&extends_class);
 
 		let mut attributes = Vec::new();
 		let mut attribute_children = Vec::new();
@@ -207,23 +208,25 @@ impl MxmlTranspiler {
 						let id:String = left.identifier.to_identifier_name().unwrap().0;
 
 						// attribute children
-						if let Expression::Call(ac_call) = expr.right.as_ref() {
-							let Expression::Member(fn_name) = ac_call.base.as_ref() else {continue};
-							let fn_name = fn_name.identifier.to_identifier_name();
+						if let Expression::Call(ac_def_call) = expr.right.as_ref() {
+							let Expression::Member(member_expr) = ac_def_call.base.as_ref() else {continue};
+							let Expression::ThisLiteral(_) = member_expr.base.as_ref() else {continue};
+							let fn_name = member_expr.identifier.to_identifier_name();
 							if let Some(fn_name) = fn_name {
 								let func = self.get_function(&fn_name.0).unwrap();
-								let attr_child = self.parse_attr_child(format!("{}:{}", namespace, id.clone()), func);
+								let child_name = format!("{}:{}", ns_name, id.clone());
+								let attr_child = self.parse_attr_child(child_name, func);
 								if let Some(attr_child) = attr_child {
 									attribute_children.push(attr_child);
 								}
 							}
 							continue;
 						}
+
 						// children array
-						if id == "mxmlContent" {
-							//TODO PARSE CHILDREn
+						if id == "mxmlContent" || id == "content" {
 							let Expression::ArrayLiteral(right) = expr.right.as_ref() else {continue};
-							let mut names = Vec::new();
+							let mut elem_func_names = Vec::new();
 							for child in &right.elements {
 								if_chain! {
 									if let Element::Expression(child) = child;
@@ -231,11 +234,11 @@ impl MxmlTranspiler {
 									if let Expression::Member(member) = call.base.as_ref();
 									if let QualifiedIdentifierIdentifier::Id(id) = &member.identifier.id;
 									then {
-										names.push(id.to_owned());
+										elem_func_names.push(id.to_owned());
 									}
 								}
 							}
-							for func_name in names {
+							for func_name in elem_func_names {
 								let function = self
 									.get_function(&func_name.0)
 									.expect("child function is called in element definition but is not defined");
@@ -246,11 +249,13 @@ impl MxmlTranspiler {
 							}
 							continue;
 						}
+
 						// embeds
 						if parse_as_root && id.contains("_embed_mxml_") {
 							// TOdo proper embed handler
 							continue;
 						}
+
 						// attributes or properties
 						if id == "id" {
 							let Expression::StringLiteral(str) = &expr.right.as_ref() else {continue};
@@ -262,12 +267,14 @@ impl MxmlTranspiler {
 								continue;
 							}
 						}
+
 						match MxmlTranspiler::parse_attr(id.clone(), expr.right.as_ref()) {
 							Some(attr) => attributes.push(attr),
 							None => continue,
 						}
 						continue;
 					}
+
 					// states
 					if_chain! {
 						if let Expression::QualifiedIdentifier(left) = expr.left.as_ref();
@@ -281,10 +288,26 @@ impl MxmlTranspiler {
 						}
 					}
 				}
+
 				// component declarations
 				Expression::Call(expr) => {
 					if !parse_as_root {
 						continue;
+					}
+					let Expression::Member(mem) = expr.base.as_ref() else {continue};
+					let Expression::ThisLiteral(_) = mem.base.as_ref() else {continue};
+					let Some(func_name) = mem.identifier.to_identifier_name() else {continue};
+					let function = self
+						.get_function(&func_name.0);
+					
+					match function {
+						Some(func) => {
+							let elem = self.parse_elem(func);
+							if elem.is_some() {
+								self.declarations.borrow_mut().push(elem.unwrap());
+							}
+						}
+						None => continue
 					}
 				}
 				_ => {}
@@ -292,7 +315,7 @@ impl MxmlTranspiler {
 		}
 		
 		Some(MxmlElement {
-			namespace,
+			namespace: ns_name,
 			class_name: extends_class,
 			attributes,
 			attribute_children,
@@ -304,7 +327,7 @@ impl MxmlTranspiler {
 		if BLOCK_PROPS.contains(&name.as_str()) {
 			return None;
 		}
-		let mut value = MxmlTranspiler::expr_to_string(val_expr);
+		let mut value = ActionScript::expr_to_string(val_expr);
 		match name.as_str() {
 			"percentWidth" => {
 				name = "width".into();
@@ -328,37 +351,36 @@ impl MxmlTranspiler {
 	}
 
 	fn use_namespace(&self, specifier:&String) -> String {
-		let full_name = self
-			.get_class_package(specifier)
-			.expect(("Import for ".to_owned() + specifier + " should have existed").as_str());
+		let package = self
+			.get_class_package(specifier);
 
-		let first_val = full_name
-			.first()
+		let base = package.first()
 			.expect("Package name should have had at least one element");
-		let def_ns = DEFAULT_NAMESPACES.into_iter().find(|ns| ns.base_package == first_val);
+		let def_ns = DEFAULT_NAMESPACES.into_iter()
+			.find(|ns| ns.base_package == base);
 		if let Some(def_ns) = def_ns {
 			return def_ns.name.into();
 		}
 
-		let name = full_name.last().unwrap().to_owned();
-		let value = full_name.join(".") + ".*";
+		let name = package.last().unwrap().to_owned();
+		let value = package.join(".") + ".*";
 		self.namespaces.borrow_mut().put(name.clone(), value);
 		name
 	}
 
-	fn get_class_package(&self, class_name:&String) -> Option<Vec<String>> {
+	fn get_class_package(&self, class_name:&String) -> Vec<String> {
 		for import in self.imports.iter() {
 			if_chain! {
 				if let ImportSpecifier::Identifier(id) = &import.import_specifier;
 				if &id.0 == class_name;
 				then {
 					let name = MxmlTranspiler::package_name_to_vec(&import.package_name);
-					return Some(name);
+					return name;
 				}
 			}
 		}
 		// no import statement found, default to component package
-		Some(self.package.clone())
+		self.package.clone()
 	}
 
     fn package_name_to_vec(name: &Vec<(String, Location)>) -> Vec<String> {
@@ -366,29 +388,6 @@ impl MxmlTranspiler {
 			.iter_mut()
 			.map(|v| return v.0.to_owned())
 			.collect::<Vec<String>>()
-	}
-
-	/// stringifies an expression and returns it
-	fn expr_to_string(expr:&Expression) -> String {
-		match expr {
-			Expression::StringLiteral(literal) =>
-				return literal.value.to_owned(),
-			Expression::NumericLiteral(literal) =>
-				return literal.value.to_owned(),
-			Expression::BooleanLiteral(literal) =>
-				return literal.value.to_owned().to_string(),
-			Expression::Unary(operation) => {
-				let operator:&str;
-				match operation.operator {
-					Operator::Negative => {
-						operator = &"-";
-					}
-					_ => panic!("Unknown unary operator!")
-				}
-				return format!("{}{}", operator, MxmlTranspiler::expr_to_string(operation.expression.as_ref()).as_str());
-			},
-			_ =>return "".into()
-		}
 	}
 
     fn get_function(&self, name:&String) -> Option<&FunctionDefinition> {
@@ -403,6 +402,41 @@ impl MxmlTranspiler {
 		}
 		None
 	}
+}
 
-    
+struct ActionScript {}
+impl ActionScript {
+	/// stringifies an expression and returns it
+	fn expr_to_string(expr:&Expression) -> String {
+		match expr {
+			Expression::StringLiteral(literal) =>
+				literal.value.to_owned(),
+			Expression::NumericLiteral(literal) =>
+				literal.value.to_owned(),
+			Expression::BooleanLiteral(literal) =>
+				literal.value.to_owned().to_string(),
+			Expression::Unary(operation) => {
+				let base = ActionScript::expr_to_string(operation.expression.as_ref());
+				match operation.operator {
+					Operator::Positive      => String::from("+") + &base,
+					Operator::Negative      => String::from("-") + &base,
+					Operator::PreIncrement  => String::from("++") + &base,
+					Operator::PostIncrement => base + "++",
+					Operator::PreDecrement  => String::from("--") + &base,
+					Operator::PostDecrement => base + "--",
+					_ =>
+						panic!("Unknown unary operator at {:?}", expr.location())
+				}
+			},
+			Expression::Binary(operation) => {
+				panic!("Unknown binary operation: {:?}", operation.operator);
+			}
+			Expression::ArrayLiteral(operation) => {
+				panic!("Unhandled array literal at {:?}", operation.location);
+			}
+			_ => {
+				panic!("Unknown expression at {:?}", expr.location());
+			}
+		}
+	}
 }

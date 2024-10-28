@@ -1,5 +1,6 @@
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::error::Error;
+use std::str;
 use xml::attribute::Attribute;
 use xml::name::Name;
 use xml::namespace::Namespace;
@@ -42,21 +43,83 @@ pub struct AttributeChild(pub String, pub MxmlElement);
 pub struct MxmlDoc {
 	pub root: MxmlElement,
 	pub namespaces: Namespace,
+	pub declarations: Vec<MxmlElement>,
 }
 impl MxmlDoc {
 	/// generates and returns an mxml string
-	pub fn generate_mxml(&self) -> Result<(), Box<dyn Error>> {
-		let stdout = std::io::stdout().lock();
+	pub fn generate_mxml(&self) -> Result<String, Box<dyn Error>> {
+		let mut target: Vec<u8> = Vec::new();
 		let mut writer = EmitterConfig::new()
 			.perform_indent(true)
-			.create_writer(stdout);		
+			.create_writer(&mut target);		
 
 		let root = &self.root;
-		let events = root.get_writer_events(self)?;
+
+		let mut events:Vec<XmlEvent> = Vec::new();
+
+		let start = XmlEvent::StartElement {
+			name: Name {
+				local_name: &self.root.class_name,
+				namespace: None,
+				prefix: Some(&self.root.namespace),
+			},
+			attributes: Cow::from(
+				self.root.attributes.iter().map(|attr| Attribute {
+					name: Name {
+						local_name: attr.0.as_str(),
+						namespace: None,
+						prefix: None
+					},
+					value: attr.1.as_str()
+				}).collect::<Vec<Attribute>>()
+			),
+			namespace: Cow::Owned(self.namespaces.to_owned()),
+		};
+		events.push(start.into());
+
+		let dec_start = XmlEvent::StartElement {
+			name: Name {
+				local_name: "Declarations",
+				namespace: None,
+				prefix: Some("fx".into()),
+			},
+			attributes: Cow::from(Vec::new()),
+			namespace: Cow::Owned(Namespace::empty()),
+		};
+		events.push(dec_start.into());
+		for dec in &self.declarations {
+			let mut child_events = dec
+				.get_writer_events(self)
+				.expect("Should have been able to get child events");
+			events.append(&mut child_events);
+		}
+		events.push(XmlEvent::end_element().into());
+
+		for child in &self.root.children {
+			let mut child_events = child
+				.get_writer_events(self)
+				.expect("Should have been able to get child events");
+			events.append(&mut child_events);
+		}
+
+		for attr_child in &self.root.attribute_children {
+			let mut ac_events = attr_child
+				.get_writer_events(self)
+				.expect("Should have been able to get attribute child events");
+			events.append(&mut ac_events);
+		}
+
+		events.push(XmlEvent::end_element().into());
 		for event in events {
 			writer.write(event)?;
 		}
-		Ok(())
+
+
+		let doc_str = match String::from_utf8(target) {
+			Ok(v) => v,
+			Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
+		};
+		Ok(doc_str)
 	}
 }
 
@@ -69,7 +132,6 @@ pub struct MxmlElement {
 	pub children: Vec<MxmlElement>
 }
 impl MxmlElement {
-	/// returns a vector of `XmlEvent`s to be used by xml-rs
 	fn get_writer_events(&self, doc:&MxmlDoc) -> Result<Vec<XmlEvent>, Box<dyn Error>> {
 		let mut events:Vec<XmlEvent> = Vec::new();
 

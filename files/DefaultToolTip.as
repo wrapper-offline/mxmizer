@@ -33,7 +33,6 @@ package anifire.studio.components
 			mx_internal::_document = this;
 			this.mouseEnabled = false;
 			this.mouseChildren = false;
-			this.ok();
 			this.mxmlContent = [this._DefaultToolTip_RectangularDropShadow1_c(),this._DefaultToolTip_Rect1_i(),this._DefaultToolTip_Label1_i()];
 		}
 		
